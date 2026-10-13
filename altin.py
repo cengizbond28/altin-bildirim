@@ -35,19 +35,68 @@ def fiyat_al():
     return float(t[0]["last"]), "Gate PAXG (yedek)"
 
 
-def bildir(baslik, mesaj, sert=False):
+def bildir(metin_html, ozet):
+    """metin_html: Telegram HTML (b, pre). ozet: log icin kisa baslik."""
     token = os.environ.get("TELEGRAM_TOKEN", "").strip()
     chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat:
         sys.exit("TELEGRAM_TOKEN / TELEGRAM_CHAT_ID tanimli degil")
-    esc = lambda s: s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    metin = ("🚨 " if sert else "") + f"<b>{esc(baslik)}</b>\n{esc(mesaj)}"
-    govde = {"chat_id": chat, "text": metin, "parse_mode": "HTML"}
+    govde = {"chat_id": chat, "text": metin_html, "parse_mode": "HTML"}
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
                                  data=json.dumps(govde).encode("utf-8"),
                                  headers={"Content-Type": "application/json", **UA})
     urllib.request.urlopen(req, timeout=20).read()
-    print("bildirim gonderildi:", baslik)
+    print("bildirim gonderildi:", ozet)
+
+
+# ---------- Mesaj bicimi ----------
+
+def _esc(s):
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def yz(x):
+    """+%1,04 / −%1,02"""
+    return ("+" if x >= 0 else "−") + f"%{abs(x):.2f}".replace(".", ",")
+
+
+def para_isaret(x):
+    return ("+" if x >= 0 else "−") + para(abs(x))
+
+
+def tablo(satirlar):
+    """Sabit genislikli tablo: rakamlar alt alta hizali."""
+    return "<pre>" + "\n".join(_esc(f"{k:<10} {v}") for k, v in satirlar) + "</pre>"
+
+
+def esikler(fiyat):
+    return f"🎯 Sonraki eşik: ▲ {para(fiyat * (1 + ESIK_YUZDE / 100))} · ▼ {para(fiyat * (1 - ESIK_YUZDE / 100))}"
+
+
+def mesaj_normal(fiyat, ref, ref_zaman, gun_deg, saat):
+    deg = (fiyat / ref - 1) * 100
+    bas = (f"🟢 <b>ALTIN YÜKSELDİ ▲ {yz(deg)}</b>" if deg > 0
+           else f"🔴 <b>ALTIN DÜŞTÜ ▼ {yz(deg)}</b>")
+    t = tablo([("Fiyat", para(fiyat)), ("Değişim", para_isaret(fiyat - ref)),
+               ("Önceki", para(ref)), ("", f"({ref_zaman})"),
+               ("Bugün", ("▲ " if gun_deg >= 0 else "▼ ") + yz(gun_deg))])
+    return f"{bas}\n{t}\n{esikler(fiyat)}\n🕒 {saat} TSİ"
+
+
+def mesaj_sert(fiyat, acilis, gun_deg, kat, saat):
+    yon = "▲" if gun_deg > 0 else "▼"
+    sonraki = (abs(kat) + 1) * SERT_YUZDE * (1 if gun_deg > 0 else -1)
+    t = tablo([("Fiyat", para(fiyat)), ("Gün başı", para(acilis)), ("Fark", para_isaret(fiyat - acilis))])
+    return (f"🚨 <b>SERT HAREKET – ALTIN {yon} {yz(gun_deg)} (bugün)</b>\n{t}\n"
+            f"⚠️ Bir sonraki sert eşik: {yz(sonraki)} ({para(acilis * (1 + sonraki / 100))})\n🕒 {saat} TSİ")
+
+
+def mesaj_test(fiyat, kaynak, ref, saat):
+    t = tablo([("Fiyat", para(fiyat)), ("Kaynak", kaynak), ("Referans", para(ref))])
+    return (f"🧪 <b>Altın bildirimi – deneme</b>\n{t}\n"
+            f"📏 Kurallar: son bildirimden ±%{f'{ESIK_YUZDE:g}'.replace('.', ',')} → bildirim · "
+            f"gün içinde ±%{f'{SERT_YUZDE:g}'.replace('.', ',')} katları → 🚨\n"
+            f"{esikler(ref)}\n🕒 {saat} TSİ")
 
 
 def piyasa_kapali(simdi_utc):
@@ -74,10 +123,7 @@ def main():
 
     if test:
         ref = durum.get("ref", fiyat)
-        bildir("🧪 Altın bildirimi – deneme",
-             f"Ons altın: {para(fiyat)} ({kaynak})\n"
-             f"Kurallar: son bildirimden ±%{ESIK_YUZDE:g} → bildirim; gün içinde ±%{SERT_YUZDE:g} katları → ⚠️ sert hareket.\n"
-             f"Referans fiyat: {para(ref)} · {saat} TSİ")
+        bildir(mesaj_test(fiyat, kaynak, ref, saat), "deneme")
         return
 
     once = json.dumps(durum, sort_keys=True)
@@ -96,13 +142,9 @@ def main():
     # 1) Normal kademe
     deg = (fiyat / durum["ref"] - 1) * 100
     if abs(deg) >= ESIK_YUZDE:
-        yon_yukari = deg > 0
         gun_deg = (fiyat / durum["gun_acilis"] - 1) * 100
-        bildir(("🟢 Altın yükseldi " if yon_yukari else "🔴 Altın düştü ") + f"%{deg:+.2f}".replace(".", ","),
-             f"Ons: {para(fiyat)}\n"
-             f"Son bildirimden ({durum.get('ref_zaman', '?')}, {para(durum['ref'])}): "
-             f"{'+' if yon_yukari else ''}{para(fiyat - durum['ref'])}\n"
-             f"Bugün: %{gun_deg:+.2f}".replace(".", ",", 1) + f" · {saat} TSİ")
+        bildir(mesaj_normal(fiyat, durum["ref"], durum.get("ref_zaman", "?"), gun_deg, saat),
+               f"normal {deg:+.2f}%")
         durum.update(ref=fiyat, ref_zaman=saat)
 
     # 2) Sert hareket kademesi (gun ici)
@@ -110,9 +152,7 @@ def main():
     kat = int(abs(gun_deg) // SERT_YUZDE) * (1 if gun_deg > 0 else -1)
     onceki = durum.get("sert", 0)
     if kat != 0 and (abs(kat) > abs(onceki) or kat * onceki < 0):
-        bildir(f"⚠️ SERT HAREKET: altın bugün %{gun_deg:+.2f}".replace(".", ","),
-             f"Ons: {para(fiyat)}\nGün başı: {para(durum['gun_acilis'])} → fark {para(fiyat - durum['gun_acilis'])}\n{saat} TSİ",
-             sert=True)
+        bildir(mesaj_sert(fiyat, durum["gun_acilis"], gun_deg, kat, saat), f"sert {gun_deg:+.2f}%")
         durum["sert"] = kat
 
     # Yalnizca durum degistiyse yaz (her 10 dk'da bir commit olmasin)
