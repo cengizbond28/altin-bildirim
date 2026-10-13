@@ -1,11 +1,11 @@
-"""Altin (ons, XAU/USD) fiyat bildirimi -> ntfy.
+"""Altin (ons, XAU/USD) fiyat bildirimi -> Telegram botu.
 
 Iki kademe:
   1) Normal: son bildirimden bu yana fiyat ESIK_YUZDE kadar oynarsa bildirim (referans yeni fiyata kayar).
   2) Sert hareket: gun icinde (TSI gun basindan) SERT_YUZDE'nin her katinda yuksek oncelikli bildirim.
 
 Durum durum.json dosyasinda tutulur (GitHub Actions her degisiklikte depoya geri yazar).
-Ortam degiskenleri: NTFY_TOPIC (zorunlu), TEST=1 (deneme bildirimi gonderir, durumu degistirmez).
+Ortam degiskenleri: TELEGRAM_TOKEN ve TELEGRAM_CHAT_ID (zorunlu), TEST=1 (deneme bildirimi gonderir, durumu degistirmez).
 """
 import datetime as dt
 import json
@@ -35,16 +35,16 @@ def fiyat_al():
     return float(t[0]["last"]), "Gate PAXG (yedek)"
 
 
-def ntfy(baslik, mesaj, oncelik="default", etiket=""):
-    konu = os.environ.get("NTFY_TOPIC", "").strip()
-    if not konu:
-        sys.exit("NTFY_TOPIC tanimli degil")
-    # JSON ile gonder: emojili/Turkce basliklar HTTP basliginda bozulmasin
-    govde = {"topic": konu, "title": baslik, "message": mesaj,
-             "priority": {"default": 3, "high": 4, "urgent": 5}.get(oncelik, 3)}
-    if etiket:
-        govde["tags"] = [etiket]
-    req = urllib.request.Request("https://ntfy.sh/", data=json.dumps(govde).encode("utf-8"),
+def bildir(baslik, mesaj, sert=False):
+    token = os.environ.get("TELEGRAM_TOKEN", "").strip()
+    chat = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+    if not token or not chat:
+        sys.exit("TELEGRAM_TOKEN / TELEGRAM_CHAT_ID tanimli degil")
+    esc = lambda s: s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    metin = ("🚨 " if sert else "") + f"<b>{esc(baslik)}</b>\n{esc(mesaj)}"
+    govde = {"chat_id": chat, "text": metin, "parse_mode": "HTML"}
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage",
+                                 data=json.dumps(govde).encode("utf-8"),
                                  headers={"Content-Type": "application/json", **UA})
     urllib.request.urlopen(req, timeout=20).read()
     print("bildirim gonderildi:", baslik)
@@ -74,11 +74,10 @@ def main():
 
     if test:
         ref = durum.get("ref", fiyat)
-        ntfy("🧪 Altın bildirimi – deneme",
+        bildir("🧪 Altın bildirimi – deneme",
              f"Ons altın: {para(fiyat)} ({kaynak})\n"
              f"Kurallar: son bildirimden ±%{ESIK_YUZDE:g} → bildirim; gün içinde ±%{SERT_YUZDE:g} katları → ⚠️ sert hareket.\n"
-             f"Referans fiyat: {para(ref)} · {saat} TSİ",
-             "default", "test_tube")
+             f"Referans fiyat: {para(ref)} · {saat} TSİ")
         return
 
     once = json.dumps(durum, sort_keys=True)
@@ -99,12 +98,11 @@ def main():
     if abs(deg) >= ESIK_YUZDE:
         yon_yukari = deg > 0
         gun_deg = (fiyat / durum["gun_acilis"] - 1) * 100
-        ntfy(("🟢 Altın yükseldi " if yon_yukari else "🔴 Altın düştü ") + f"%{deg:+.2f}".replace(".", ","),
+        bildir(("🟢 Altın yükseldi " if yon_yukari else "🔴 Altın düştü ") + f"%{deg:+.2f}".replace(".", ","),
              f"Ons: {para(fiyat)}\n"
              f"Son bildirimden ({durum.get('ref_zaman', '?')}, {para(durum['ref'])}): "
              f"{'+' if yon_yukari else ''}{para(fiyat - durum['ref'])}\n"
-             f"Bugün: %{gun_deg:+.2f}".replace(".", ",", 1) + f" · {saat} TSİ",
-             "default", "chart_with_upwards_trend" if yon_yukari else "chart_with_downwards_trend")
+             f"Bugün: %{gun_deg:+.2f}".replace(".", ",", 1) + f" · {saat} TSİ")
         durum.update(ref=fiyat, ref_zaman=saat)
 
     # 2) Sert hareket kademesi (gun ici)
@@ -112,9 +110,9 @@ def main():
     kat = int(abs(gun_deg) // SERT_YUZDE) * (1 if gun_deg > 0 else -1)
     onceki = durum.get("sert", 0)
     if kat != 0 and (abs(kat) > abs(onceki) or kat * onceki < 0):
-        ntfy(f"⚠️ SERT HAREKET: altın bugün %{gun_deg:+.2f}".replace(".", ","),
+        bildir(f"⚠️ SERT HAREKET: altın bugün %{gun_deg:+.2f}".replace(".", ","),
              f"Ons: {para(fiyat)}\nGün başı: {para(durum['gun_acilis'])} → fark {para(fiyat - durum['gun_acilis'])}\n{saat} TSİ",
-             "high", "warning")
+             sert=True)
         durum["sert"] = kat
 
     # Yalnizca durum degistiyse yaz (her 10 dk'da bir commit olmasin)
