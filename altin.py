@@ -1,9 +1,10 @@
-"""Altin (ons, XAU/USD) fiyat bildirimi -> Telegram botu.
+"""Altin (ons) fiyat bildirimi -> Telegram botu.
 
 Iki kademe:
   1) Normal: son bildirimden bu yana fiyat ESIK_YUZDE kadar oynarsa bildirim (referans yeni fiyata kayar).
   2) Sert hareket: gun icinde (TSI gun basindan) SERT_YUZDE'nin her katinda yuksek oncelikli bildirim.
 
+Tum rakamlar tek kaynaktan: Gate PAXG/USDT (ons altina 1:1 bagli token).
 Durum durum.json dosyasinda tutulur (GitHub Actions her degisiklikte depoya geri yazar).
 Ortam degiskenleri: TELEGRAM_TOKEN ve TELEGRAM_CHAT_ID (zorunlu), TEST=1 (deneme bildirimi gonderir, durumu degistirmez).
 """
@@ -11,6 +12,7 @@ import datetime as dt
 import json
 import os
 import sys
+import time
 import urllib.request
 
 ESIK_YUZDE = 0.5
@@ -19,6 +21,7 @@ GECE_SESSIZ = (0, 8)  # TSI 00:00-08:00 arasi normal bildirim yok (sert hareket 
 DURUM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "durum.json")
 TSI = dt.timezone(dt.timedelta(hours=3))
 UA = {"User-Agent": "altin-bildirim/1.0"}
+GATE = "https://api.gateio.ws/api/v4/spot"
 
 
 def _json(url):
@@ -27,13 +30,29 @@ def _json(url):
 
 
 def fiyat_al():
-    """Spot XAU/USD; olmazsa PAXG (altina 1:1 bagli token)."""
-    try:
-        return float(_json("https://api.gold-api.com/price/XAU")["price"]), "gold-api (XAU/USD)"
-    except Exception as e:
-        print("gold-api hata:", e)
-    t = _json("https://api.gateio.ws/api/v4/spot/tickers?currency_pair=PAXG_USDT")
-    return float(t[0]["last"]), "Gate PAXG (yedek)"
+    t = _json(f"{GATE}/tickers?currency_pair=PAXG_USDT")
+    return float(t[0]["last"]), "PAXG (ons altına 1:1)"
+
+
+def donemler(fiyat):
+    """24 saat / 1 hafta / 1 ay / yilbasi: (baslangic, en dusuk, en yuksek). Mum alanlari: t, hacim, kapanis, yuksek, dusuk, acilis."""
+    now = int(time.time())
+    m15 = _json(f"{GATE}/candlesticks?currency_pair=PAXG_USDT&interval=15m&from={now - 24 * 3600}&to={now}")
+    yb = int(dt.datetime(dt.datetime.now(TSI).year, 1, 1, tzinfo=dt.timezone.utc).timestamp())
+    gun = _json(f"{GATE}/candlesticks?currency_pair=PAXG_USDT&interval=1d&from={yb}&to={now}")
+
+    def aralik(mumlar):
+        return min([float(m[4]) for m in mumlar] + [fiyat]), max([float(m[3]) for m in mumlar] + [fiyat])
+
+    def gunluk(n):
+        sinir = now - n * 86400
+        secim = [m for m in gun if int(m[0]) > sinir]
+        onceki = [m for m in gun if int(m[0]) <= sinir]
+        return (float(onceki[-1][2]) if onceki else float(secim[0][5]),) + aralik(secim)
+
+    return {"24 saat": (float(m15[0][5]),) + aralik(m15),
+            "1 hafta": gunluk(7), "1 ay": gunluk(30),
+            "Yılbaşı": (float(gun[0][5]),) + aralik(gun)}
 
 
 def bildir(metin_html, ozet):
@@ -56,6 +75,10 @@ def _esc(s):
     return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+def para(x):
+    return f"{x:,.2f} $".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
 def yz(x):
     """+%1,04 / −%1,02"""
     return ("+" if x >= 0 else "−") + f"%{abs(x):.2f}".replace(".", ",")
@@ -65,49 +88,54 @@ def para_isaret(x):
     return ("+" if x >= 0 else "−") + para(abs(x))
 
 
-def tablo(satirlar):
-    """Sabit genislikli tablo: rakamlar alt alta hizali."""
-    return "<pre>" + "\n".join(_esc(f"{k:<10} {v}") for k, v in satirlar) + "</pre>"
+def degisim(fiyat, bas):
+    d = (fiyat / bas - 1) * 100
+    return f"{'▲' if d >= 0 else '▼'} {para_isaret(fiyat - bas):<11} ({yz(d)})"
 
 
-def esikler(fiyat):
-    return f"🎯 Sonraki eşik: ▲ {para(fiyat * (1 + ESIK_YUZDE / 100))} · ▼ {para(fiyat * (1 - ESIK_YUZDE / 100))}"
+def tablo(ust, fiyat):
+    """ust: mesaja ozel ilk satirlar; altina donem degisimleri ve araliklar eklenir."""
+    satirlar = list(ust)
+    try:
+        d = donemler(fiyat)
+        satirlar += [("", "")] + [(ad, degisim(fiyat, v[0])) for ad, v in d.items()]
+        satirlar += [("", ""), ("Aralık", "en düşük – en yüksek")]
+        for ad, anahtar in (("24 saat", "24 saat"), ("Haftalık", "1 hafta"), ("Aylık", "1 ay"), ("Yıllık", "Yılbaşı")):
+            _, dus, yuk = d[anahtar]
+            satirlar.append((ad, f"{para(dus)[:-2]} – {para(yuk)}"))
+    except Exception as e:  # donem verisi alinamazsa bildirim yine gider
+        print("donem verisi alinamadi:", e)
+    return "<pre>" + "\n".join(_esc(f"{k:<9} {v}".rstrip()) for k, v in satirlar) + "</pre>"
 
 
-def mesaj_normal(fiyat, ref, ref_zaman, gun_deg, saat):
+def mesaj_normal(fiyat, ref, ref_zaman, saat):
     deg = (fiyat / ref - 1) * 100
     bas = (f"🟢 <b>ALTIN YÜKSELDİ ▲ {yz(deg)}</b>" if deg > 0
            else f"🔴 <b>ALTIN DÜŞTÜ ▼ {yz(deg)}</b>")
-    t = tablo([("Fiyat", para(fiyat)), ("Değişim", para_isaret(fiyat - ref)),
-               ("Önceki", para(ref)), ("", f"({ref_zaman})"),
-               ("Bugün", ("▲ " if gun_deg >= 0 else "▼ ") + yz(gun_deg))])
-    return f"{bas}\n{t}\n{esikler(fiyat)}\n🕒 {saat} TSİ"
+    t = tablo([("Fiyat", para(fiyat)), ("Değişim", f"{degisim(fiyat, ref)}"), ("", f"son bildirim {ref_zaman}")], fiyat)
+    return f"{bas}\n{t}\n🕒 {saat} TSİ"
 
 
 def mesaj_sert(fiyat, acilis, gun_deg, kat, saat):
     yon = "▲" if gun_deg > 0 else "▼"
     sonraki = (abs(kat) + 1) * SERT_YUZDE * (1 if gun_deg > 0 else -1)
-    t = tablo([("Fiyat", para(fiyat)), ("Gün başı", para(acilis)), ("Fark", para_isaret(fiyat - acilis))])
+    t = tablo([("Fiyat", para(fiyat)), ("Gün başı", para(acilis)), ("Fark", degisim(fiyat, acilis))], fiyat)
     return (f"🚨 <b>SERT HAREKET – ALTIN {yon} {yz(gun_deg)} (bugün)</b>\n{t}\n"
             f"⚠️ Bir sonraki sert eşik: {yz(sonraki)} ({para(acilis * (1 + sonraki / 100))})\n🕒 {saat} TSİ")
 
 
-def mesaj_test(fiyat, kaynak, ref, saat):
-    t = tablo([("Fiyat", para(fiyat)), ("Kaynak", kaynak), ("Referans", para(ref))])
+def mesaj_test(fiyat, ref, saat):
+    t = tablo([("Fiyat", para(fiyat)), ("Referans", para(ref))], fiyat)
     return (f"🧪 <b>Altın bildirimi – deneme</b>\n{t}\n"
             f"📏 Kurallar: son bildirimden ±%{f'{ESIK_YUZDE:g}'.replace('.', ',')} → bildirim · "
-            f"gün içinde ±%{f'{SERT_YUZDE:g}'.replace('.', ',')} katları → 🚨\n"
-            f"{esikler(ref)}\n🕒 {saat} TSİ")
+            f"gün içinde ±%{f'{SERT_YUZDE:g}'.replace('.', ',')} katları → 🚨 · "
+            f"{GECE_SESSIZ[0]:02d}:00–{GECE_SESSIZ[1]:02d}:00 sessiz\n🕒 {saat} TSİ")
 
 
 def piyasa_kapali(simdi_utc):
     # Altin piyasasi: Cuma ~21:00 UTC kapanir, Pazar ~22:00 UTC acilir.
     g, s = simdi_utc.weekday(), simdi_utc.hour  # Pzt=0 ... Paz=6
     return g == 5 or (g == 4 and s >= 21) or (g == 6 and s < 22)
-
-
-def para(x):
-    return f"{x:,.2f} $".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def main():
@@ -123,8 +151,7 @@ def main():
     durum = json.load(open(DURUM, encoding="utf-8")) if os.path.exists(DURUM) else {}
 
     if test:
-        ref = durum.get("ref", fiyat)
-        bildir(mesaj_test(fiyat, kaynak, ref, saat), "deneme")
+        bildir(mesaj_test(fiyat, durum.get("ref", fiyat), saat), "deneme")
         return
 
     once = json.dumps(durum, sort_keys=True)
@@ -145,9 +172,7 @@ def main():
     sessiz = GECE_SESSIZ[0] <= simdi.astimezone(TSI).hour < GECE_SESSIZ[1]
     # Gece: referans degismez; sabah ilk kontrolde gece boyunca olan hareket tek bildirimle gelir
     if abs(deg) >= ESIK_YUZDE and not sessiz:
-        gun_deg = (fiyat / durum["gun_acilis"] - 1) * 100
-        bildir(mesaj_normal(fiyat, durum["ref"], durum.get("ref_zaman", "?"), gun_deg, saat),
-               f"normal {deg:+.2f}%")
+        bildir(mesaj_normal(fiyat, durum["ref"], durum.get("ref_zaman", "?"), saat), f"normal {deg:+.2f}%")
         durum.update(ref=fiyat, ref_zaman=saat)
 
     # 2) Sert hareket kademesi (gun ici)
@@ -158,7 +183,7 @@ def main():
         bildir(mesaj_sert(fiyat, durum["gun_acilis"], gun_deg, kat, saat), f"sert {gun_deg:+.2f}%")
         durum["sert"] = kat
 
-    # Yalnizca durum degistiyse yaz (her 10 dk'da bir commit olmasin)
+    # Yalnizca durum degistiyse yaz (her kontrolde commit olmasin)
     if json.dumps(durum, sort_keys=True) != once:
         with open(DURUM, "w", encoding="utf-8") as f:
             json.dump(durum, f, ensure_ascii=False, indent=1)
