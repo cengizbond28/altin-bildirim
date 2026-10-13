@@ -13,8 +13,9 @@ import os
 import sys
 import urllib.request
 
-ESIK_YUZDE = 1.0
+ESIK_YUZDE = 0.5
 SERT_YUZDE = 2.5
+GECE_SESSIZ = (0, 8)  # TSI 00:00-08:00 arasi normal bildirim yok (sert hareket yine gelir)
 DURUM = os.path.join(os.path.dirname(os.path.abspath(__file__)), "durum.json")
 TSI = dt.timezone(dt.timedelta(hours=3))
 UA = {"User-Agent": "altin-bildirim/1.0"}
@@ -141,7 +142,9 @@ def main():
 
     # 1) Normal kademe
     deg = (fiyat / durum["ref"] - 1) * 100
-    if abs(deg) >= ESIK_YUZDE:
+    sessiz = GECE_SESSIZ[0] <= simdi.astimezone(TSI).hour < GECE_SESSIZ[1]
+    # Gece: referans degismez; sabah ilk kontrolde gece boyunca olan hareket tek bildirimle gelir
+    if abs(deg) >= ESIK_YUZDE and not sessiz:
         gun_deg = (fiyat / durum["gun_acilis"] - 1) * 100
         bildir(mesaj_normal(fiyat, durum["ref"], durum.get("ref_zaman", "?"), gun_deg, saat),
                f"normal {deg:+.2f}%")
