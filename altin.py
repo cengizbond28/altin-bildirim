@@ -34,6 +34,36 @@ def fiyat_al():
     return float(t[0]["last"]), "PAXG (ons altına 1:1)"
 
 
+ONS_GRAM = 31.1034768
+_kur = []
+
+
+def kur_al():
+    """USD/TRY: BtcTurk -> OKX -> gunluk doviz servisi; hicbiri olmazsa None. Bir kez cekilir."""
+    if _kur:
+        return _kur[0]
+    deger = None
+    for url, oku in (("https://api.btcturk.com/api/v2/ticker?pairSymbol=USDTTRY", lambda d: d["data"][0]["last"]),
+                     ("https://www.okx.com/api/v5/market/ticker?instId=USDT-TRY", lambda d: d["data"][0]["last"]),
+                     ("https://open.er-api.com/v6/latest/USD", lambda d: d["rates"]["TRY"])):
+        try:
+            deger = float(oku(_json(url)))
+            break
+        except Exception as e:
+            print("kur hata:", url.split("/")[2], e)
+    _kur.append(deger)
+    return deger
+
+
+def gram_tl(fiyat):
+    kur = kur_al()
+    return None if kur is None else fiyat * kur / ONS_GRAM
+
+
+def tl(x):
+    return f"{x:,.0f} ₺".replace(",", ".")
+
+
 def donemler(fiyat):
     """24 saat / 1 hafta / 1 ay / yilbasi: (baslangic, en dusuk, en yuksek). Mum alanlari: t, hacim, kapanis, yuksek, dusuk, acilis."""
     now = int(time.time())
@@ -105,6 +135,9 @@ def tablo(ust, fiyat):
             satirlar.append((ad, f"{para(dus)[:-2]} – {para(yuk)}"))
     except Exception as e:  # donem verisi alinamazsa bildirim yine gider
         print("donem verisi alinamadi:", e)
+    g = gram_tl(fiyat)
+    if g is not None:  # tablonun en sonunda
+        satirlar += [("", ""), ("Gram TL", tl(g))]
     return "<pre>" + "\n".join(_esc(f"{k:<9} {v}".rstrip()) for k, v in satirlar) + "</pre>"
 
 
@@ -125,11 +158,19 @@ def mesaj_sert(fiyat, acilis, gun_deg, kat, saat):
 
 
 def mesaj_test(fiyat, ref, saat):
-    t = tablo([("Fiyat", para(fiyat)), ("Referans", para(ref))], fiyat)
+    t = tablo([("Fiyat", para(fiyat))], fiyat)
     return (f"🧪 <b>Altın bildirimi – deneme</b>\n{t}\n"
             f"📏 Kurallar: son bildirimden ±%{f'{ESIK_YUZDE:g}'.replace('.', ',')} → bildirim · "
             f"gün içinde ±%{f'{SERT_YUZDE:g}'.replace('.', ',')} katları → 🚨 · "
             f"{GECE_SESSIZ[0]:02d}:00–{GECE_SESSIZ[1]:02d}:00 sessiz\n🕒 {saat} TSİ")
+
+
+def mesaj_haftalik(fiyat, sayac, saat):
+    g = gram_tl(fiyat)
+    n, s = sayac.get("normal", 0), sayac.get("sert", 0)
+    return (f"✅ <b>Altın bildirimi çalışıyor</b>\n"
+            f"Geçen hafta: {n + s} bildirim ({n} normal, {s} sert)\n"
+            f"Fiyat {para(fiyat)}" + (f" · Gram {tl(g)}" if g else "") + f"\n🕒 {saat} TSİ")
 
 
 def piyasa_kapali(simdi_utc):
@@ -174,6 +215,8 @@ def main():
     if abs(deg) >= ESIK_YUZDE and not sessiz:
         bildir(mesaj_normal(fiyat, durum["ref"], durum.get("ref_zaman", "?"), saat), f"normal {deg:+.2f}%")
         durum.update(ref=fiyat, ref_zaman=saat)
+        sayac = durum.setdefault("sayac", {})
+        sayac["normal"] = sayac.get("normal", 0) + 1
 
     # 2) Sert hareket kademesi (gun ici)
     gun_deg = (fiyat / durum["gun_acilis"] - 1) * 100
@@ -182,6 +225,15 @@ def main():
     if kat != 0 and (abs(kat) > abs(onceki) or kat * onceki < 0):
         bildir(mesaj_sert(fiyat, durum["gun_acilis"], gun_deg, kat, saat), f"sert {gun_deg:+.2f}%")
         durum["sert"] = kat
+        sayac = durum.setdefault("sayac", {})
+        sayac["sert"] = sayac.get("sert", 0) + 1
+
+    # 3) Haftalik "sistem calisiyor": Pazartesi 09:00 TSI sonrasi ilk kontrol, haftada bir
+    yerel = simdi.astimezone(TSI)
+    hafta = f"{yerel.isocalendar()[0]}-H{yerel.isocalendar()[1]:02d}"
+    if yerel.weekday() == 0 and yerel.hour >= 9 and durum.get("kalp") != hafta:
+        bildir(mesaj_haftalik(fiyat, durum.get("sayac", {}), saat), "haftalik")
+        durum.update(kalp=hafta, sayac={})
 
     # Yalnizca durum degistiyse yaz (her kontrolde commit olmasin)
     if json.dumps(durum, sort_keys=True) != once:
