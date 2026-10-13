@@ -2,7 +2,7 @@ name: altin-bildirim
 
 on:
   schedule:
-    - cron: "*/10 * * * 0-5"   # Pazar-Cuma, 10 dk'da bir (Cumartesi yok; kapali saatleri betik atlar)
+    - cron: "*/5 * * * 0-5"   # Pazar-Cuma, 5 dk'da bir (Cumartesi yok; kapali saatleri betik atlar)
   workflow_dispatch:
     inputs:
       test:
