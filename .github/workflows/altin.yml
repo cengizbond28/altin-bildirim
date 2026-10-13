@@ -25,7 +25,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Fiyati kontrol et
         env:
-          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.test && '1' || '' }}
         run: python3 altin.py
       - name: Durumu kaydet
