@@ -2,7 +2,10 @@ name: altin-bildirim
 
 on:
   schedule:
-    - cron: "*/5 * * * 0-5"   # Pazar-Cuma, 5 dk'da bir (Cumartesi yok; kapali saatleri betik atlar)
+    # GitHub sik zamanlamalari cogu kez atliyor (gercekte 3-5 saatte bir tetikliyor).
+    # Bu yuzden her calisma ~5 saat 45 dk acik kalip 5 dk'da bir kontrol eder;
+    # siradaki tetik onceki bitince baslar -> kesintisiz takip.
+    - cron: "*/30 * * * 0-5"   # Pazar-Cuma (Cumartesi yok; kapali saatleri betik atlar)
   workflow_dispatch:
     inputs:
       test:
@@ -20,21 +23,28 @@ concurrency:
 jobs:
   kontrol:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
-      - name: Fiyati kontrol et
+      - name: Fiyati kontrol et (dongu)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.test && '1' || '' }}
-        run: python3 altin.py
-      - name: Durumu kaydet
+          # Elle (Run workflow) calistirmada tek kontrol yapilir, dongu yalniz zamanlanmis calismada.
+          SURE_DK: ${{ github.event_name == 'schedule' && '345' || '0' }}
+          ARALIK_SN: "300"
         run: |
-          if [ -n "$(git status --porcelain durum.json)" ]; then
-            git config user.name "altin-bot"
-            git config user.email "altin-bot@users.noreply.github.com"
-            git add durum.json
-            git commit -m "durum guncellendi"
-            git push
-          fi
+          git config user.name "altin-bot"
+          git config user.email "altin-bot@users.noreply.github.com"
+          BITIS=$(( $(date +%s) + SURE_DK * 60 ))
+          while :; do
+            python3 altin.py || echo "altin.py hata verdi, sonraki turda tekrar denenecek"
+            if [ -n "$(git status --porcelain durum.json)" ]; then
+              git add durum.json
+              git commit -q -m "durum guncellendi"
+              git push -q || { git pull -q --rebase && git push -q; } || echo "push basarisiz"
+            fi
+            [ $(( $(date +%s) + ARALIK_SN )) -ge "$BITIS" ] && break
+            sleep "$ARALIK_SN"
+          done
