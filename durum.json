@@ -3,9 +3,10 @@
  "ref_zaman": "30.10 16:53",
  "gun": "2026-10-30",
  "gun_acilis": 4024.99,
- "sert": 0,
+ "sert": -1,
  "sayac": {
-  "normal": 14
+  "normal": 14,
+  "sert": 1
  },
  "kalp": "2026-H44"
 }
