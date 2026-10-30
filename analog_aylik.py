@@ -44,7 +44,7 @@ def karne_oku():
 
 def karne_yaz(satirlar):
     with open(KARNE, "w", encoding="utf-8", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=ALANLAR)
+        w = csv.DictWriter(f, fieldnames=ALANLAR, lineterminator="\n")
         w.writeheader()
         w.writerows(satirlar)
 
@@ -59,7 +59,7 @@ def kapanis_oku():
 
 def kapanis_yaz(kap):
     with open(KAPANISLAR, "w", encoding="utf-8", newline="") as f:
-        w = csv.writer(f)
+        w = csv.writer(f, lineterminator="\n")  # git'teki dosyayla aynı satır sonu; gereksiz commit olmasın
         w.writerow(["ay", "kapanis", "kaynak"])
         for (y, m), (c, k) in sorted(kap.items()):
             w.writerow([f"{y}-{m:02d}", f"{c:.2f}", k])
@@ -98,6 +98,7 @@ def kapanislari_guncelle():
     son_ay = (simdi.year - 1, 12) if simdi.month == 1 else (simdi.year, simdi.month - 1)
     # Yalnız dosyadaki son aydan sonrası aranır (Yahoo 2000-08'den başlıyor; eski boşluklar her ay yeniden denenmesin)
     eksik = list(_aylar(_sonraki_ay(max(kap)) if kap else ILK_AY, son_ay))
+    eksik_ilk = len(kap)
     if eksik:
         try:
             yahoo = r.kapanis_fiyat(r.yahoo_gunluk())
@@ -113,7 +114,8 @@ def kapanislari_guncelle():
             print("Gate'e ulasilamadi:", type(e).__name__, e)
     if son_ay not in kap:
         sys.exit(f"{son_ay[0]}-{son_ay[1]:02d} kapanisi hicbir kaynaktan alinamadi; yarin (2'si) tekrar denenecek")
-    kapanis_yaz(kap)
+    if eksik_ilk != len(kap):  # yalnız yeni kapanış eklendiyse yaz
+        kapanis_yaz(kap)
     return {a: c for a, (c, _) in kap.items()}, {k for a, (_, k) in kap.items() if a[0] >= son_ay[0]}
 
 
