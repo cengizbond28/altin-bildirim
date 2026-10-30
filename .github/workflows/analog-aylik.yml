@@ -1,0 +1,41 @@
+name: analog-aylik
+
+on:
+  schedule:
+    # Her ayin 1'i ve 2'si 10:00 TSI. 2'si yedek: GitHub zamanlamayi atlarsa calisir;
+    # ay zaten islendiyse betik mesaj gondermeden cikar.
+    - cron: "0 7 1,2 * *"
+  workflow_dispatch:
+    inputs:
+      test:
+        description: "Deneme mesaji gonder (karneyi degistirmez)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: analog
+  cancel-in-progress: false
+
+jobs:
+  rapor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Aylik ozet + karne
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.test && '1' || '' }}
+        run: |
+          python3 analog_aylik.py
+          if [ -n "$(git status --porcelain analog_karne.csv kapanislar.csv)" ]; then
+            git config user.name "altin-bot"
+            git config user.email "altin-bot@users.noreply.github.com"
+            git add analog_karne.csv kapanislar.csv
+            git commit -q -m "analog karne guncellendi"
+            git push -q || { git pull -q --rebase && git push -q; }
+          fi
