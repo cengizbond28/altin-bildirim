@@ -1,11 +1,12 @@
 {
- "ref": 3759.7,
- "ref_zaman": "18.11 14:14",
+ "ref": 3734.08,
+ "ref_zaman": "18.11 21:11",
  "gun": "2026-11-18",
  "gun_acilis": 3843.46,
- "sert": 0,
+ "sert": -1,
  "sayac": {
-  "normal": 8
+  "normal": 9,
+  "sert": 1
  },
  "kalp": "2026-H47"
 }
